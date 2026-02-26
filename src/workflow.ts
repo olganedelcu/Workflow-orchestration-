@@ -51,7 +51,7 @@ export async function executeWorkflow(steps: Step[]): Promise<WorkflowState> {
       ready.map((step) => simulateStepExecution(step.id)),
     );
     
-    // record
+    // record it all info
     const finishedClock = clock++;
     for(let i = 0; i < ready.length; i++){
       const succeeded = results[i]!.status === "fulfilled";
