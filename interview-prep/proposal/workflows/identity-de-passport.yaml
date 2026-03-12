@@ -1,0 +1,99 @@
+# workflows/identity-de-passport.yaml
+
+workflow:
+  name: "identity-verification"
+  country: "DE"
+  doc_type: "passport"
+
+services:
+  ocr-provider:
+    base_url: "https://ocr-service.internal"
+    auth:
+      type: "oauth2_client_credentials"
+      credentials_ref: "vault://secrets/prod/ocr-service"
+      token_url: "https://auth.internal/oauth/token"
+      scopes: ["ocr:execute"]
+
+  biometric-provider:
+    base_url: "https://biometric-service.internal"
+    auth:
+      type: "oauth2_client_credentials"
+      credentials_ref: "vault://secrets/prod/biometric-service"
+      token_url: "https://auth.internal/oauth/token"
+      scopes: ["bio:liveness", "bio:face_match"]
+
+  compliance-provider:
+    base_url: "https://compliance-service.internal"
+    auth:
+      type: "api_key"
+      credentials_ref: "vault://secrets/prod/compliance-api-key"
+      header: "X-API-Key"
+
+steps:
+  ocr:
+    depends_on: []
+    service: "ocr-provider"
+    endpoint: "POST /api/v1/extract"
+    timeout: 15s
+    retries: 3
+    backoff: exponential
+    on_failure: FAIL_WORKFLOW
+    input_mapping:
+      image_url: "inputs.doc_front_uri"
+      doc_type: "inputs.doc_type"
+
+  liveness:
+    depends_on: []
+    service: "biometric-provider"
+    endpoint: "POST /api/v1/liveness"
+    timeout: 10s
+    retries: 2
+    on_failure: FAIL_WORKFLOW
+    input_mapping:
+      video_url: "inputs.selfie_uri"
+
+  face_match:
+    depends_on: [ocr, liveness]
+    service: "biometric-provider"
+    endpoint: "POST /api/v1/match"
+    timeout: 20s
+    retries: 2
+    on_failure: MANUAL_REVIEW
+    input_mapping:
+      face_a: "stepOutputs.ocr.face_crop_uri"
+      face_b: "stepOutputs.liveness.best_frame_uri"
+
+  sanctions:
+    depends_on: [ocr]
+    service: "compliance-provider"
+    endpoint: "POST /api/v1/check"
+    timeout: 30s
+    retries: 5
+    on_failure: MANUAL_REVIEW
+    input_mapping:
+      full_name: "stepOutputs.ocr.name"
+      date_of_birth: "stepOutputs.ocr.date_of_birth"
+      country: "inputs.country"
+
+  decision:
+    depends_on: [face_match, sanctions]
+    type: internal
+    rules: "hardcoded_v1"
+
+decision_rules:
+  - condition: "sanctions.hit == true"
+    verdict: REJECTED
+    priority: 1
+  - condition: "liveness.alive == false"
+    verdict: REJECTED
+    priority: 2
+  - condition: "face_match.score < 0.5"
+    verdict: REJECTED
+    priority: 3
+  - condition: "face_match.score < 0.8"
+    verdict: MANUAL_REVIEW
+    priority: 4
+  - condition: "ocr.confidence < 0.7"
+    verdict: MANUAL_REVIEW
+    priority: 5
+  default_verdict: APPROVED
