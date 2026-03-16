@@ -79,6 +79,28 @@ steps:
     depends_on: [face_match, sanctions]
     type: internal
     rules: "hardcoded_v1"
+    manual_review:
+    depends_on: [decision]
+    type: human_task                  # new step type — not a service call
+    trigger_when: "decision.verdict == 'MANUAL_REVIEW'"
+    notify:
+      channel: "slack://kyc-reviewers"
+      message: "Review needed for case {{inputs.case_id}}"
+    timeout: 24h                      # SLA for the reviewer
+    on_timeout: ESCALATE              # what happens if nobody acts
+
+  post_review_check:
+    depends_on: [manual_review]
+    trigger_when: "manual_review.outcome == 'APPROVED'"
+    service: "compliance-provider"
+    endpoint: "POST /api/v1/enhanced-check"
+    timeout: 30s
+    retries: 3
+    on_failure: FAIL_WORKFLOW
+    input_mapping:
+      case_id: "inputs.case_id"
+      reviewer_notes: "stepOutputs.manual_review.notes"
+
 
 decision_rules:
   - condition: "sanctions.hit == true"
